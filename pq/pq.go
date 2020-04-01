@@ -18,7 +18,7 @@ type Item struct {
 	index int // The index of the item in the heap.
 }
 
-// A PriorityQueue implements heap.Interface and holds Items.
+// A pq implements heap.Interface and holds Items.
 type PriorityQueue []*Item
 
 func (pq PriorityQueue) Len() int { return len(pq) }
@@ -58,7 +58,7 @@ func (pq *PriorityQueue) update(item *Item, value string, priority int) {
 	heap.Fix(pq, item.index)
 }
 
-// This example creates a PriorityQueue with some items, adds and manipulates an item,
+// This example creates a pq with some items, adds and manipulates an item,
 // and then removes the items in priority order.
 func main() {
 	// Some items and their priorities.
