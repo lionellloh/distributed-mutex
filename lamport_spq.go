@@ -93,8 +93,9 @@ func (n *Node) enqueue(m Message){
 //TODO: How to simulate a node's need to enter the CS?
 func (n *Node) requestCS(){
 	fmt.Printf("Node %d is requesting to enter the CS \n", n.id)
+	n.logicalClock += 1
 	requestMsg := Message{
-		messageType: 1,
+		messageType: 0,
 		message:     "",
 		senderID:    n.id,
 		timestamp:   n.logicalClock,
@@ -120,7 +121,7 @@ func (n *Node) enterCS(msg Message) {
 	fmt.Printf("Node %s is entering critical section for %d seconds for msg with priority %d", n.id, numSeconds, msg.timestamp)
 	time.Sleep(time.Duration(numSeconds) * time.Second)
 	fmt.Printf("Node %s is done with critical section for %d seconds", numSeconds)
-
+	n.logicalClock += 1
 	releaseMessage := Message{
 		messageType: 2,
 		message:     "",
@@ -134,6 +135,8 @@ func (n *Node) enterCS(msg Message) {
 }
 
 func (n *Node) replyMessage(receivedMsg Message){
+	fmt.Printf("Node %d is replying Node %d \n", n.id, receivedMsg.senderID)
+	n.logicalClock += 1
 	replyMessage := Message{
 		messageType: 1,
 		message:     "",
@@ -152,36 +155,41 @@ func (n *Node) onReceiveRequest(msg Message){
 	//Check if i has received a reply from machine j for an earlier request
 	// assert that the request's messageType = 0
 	var replied bool = false
+	fmt.Println(len(n.replyTracker))
+	if len(n.replyTracker) == 0 {
+		go n.replyMessage(msg)
+		replied = true
+	}
 	for requestTS, replyMap := range n.replyTracker {
 		if requestTS < msg.timestamp {
 			//Received the necessary reply
 			if replyMap[msg.senderID] {
 				//TODO: need goroutine?
-				n.replyMessage(msg)
+				go n.replyMessage(msg)
 				replied = true
 			}
 
 		} else if requestTS == msg.timestamp && n.id < msg.senderID {
 			//Tiebreaker - there is a higher priority request AND ascertained that we received the necessary reply
 			if replyMap[msg.senderID] {
-				n.replyMessage(msg)
+				go n.replyMessage(msg)
 				replied = true
 			}
 		} else {
 		//	no earlier request
-			n.replyMessage(msg)
+			go n.replyMessage(msg)
 			replied = true
 		}
 	}
-
-	if !replied {
+	fmt.Println("REPLIED: ", replied)
+	if replied == false {
 		//Add to a map of pending replies
 		n.pendingReplies[msg.senderID] = append(n.pendingReplies[msg.senderID], msg)
+		fmt.Println("No reply")
 	}
-
-
 	//TODO: check if we need to enqueue no matter what - think so
 	n.enqueue(msg)
+	fmt.Printf("Node %d's PQ: %s \n", n.id, printPQ(n.pq))
 }
 
 func (n *Node) allReplied(timestamp int) bool {
@@ -193,8 +201,32 @@ func (n *Node) allReplied(timestamp int) bool {
 	return true
 }
 
+func (n *Node) getEmptyReplyMap() map[int] bool {
+	ret := map[int] bool {}
+	for i, _ := range n.ptrMap {
+		if i == n.id {
+			continue
+		}
+		ret[i] = false
+	}
+	return ret
+}
+
+func printPQ(pq []Message) string {
+	var ret string = "|"
+	for _, msg := range pq {
+		ret += fmt.Sprintf("[TS: %d] by Node %d| ", msg.timestamp, msg.senderID)
+	}
+	return ret
+}
+
 func (n *Node) onReceiveReply(msg Message){
 	//Keep track in the replyTracker
+	ts := msg.replyTarget.timestamp
+	//if the ts does not exist in the replyTracker, create a entry for it
+	if _, ok := n.replyTracker[ts]; !ok {
+		n.replyTracker[ts] = n.getEmptyReplyMap()
+	}
 	n.replyTracker[msg.replyTarget.timestamp][msg.senderID] = true
 	//Need to check if the node that replied has a pending request
 	for _, msg := range n.pendingReplies[msg.senderID] {
@@ -245,24 +277,30 @@ func (n *Node) broadcastMessage(msg Message){
 }
 
 func (n *Node) sendMessage(msg Message, receiverID int){
+
 	receiver := n.ptrMap[receiverID]
 	receiver.nodeChannel <- msg
 }
 
 
-func (n *Node) onMessageReceived(msg Message){
+func (n *Node) onReceivedMessage(msg Message){
+	if msg.timestamp >= n.logicalClock {
+		n.logicalClock = msg.timestamp + 1
+	} else {
+		n.logicalClock +=1
+	}
+
 	//Message is a request by another node
+	fmt.Printf("Node %d received a msg (type= %d) from Node %d \n", n.id, msg.messageType, msg.senderID)
 	switch mType := msg.messageType; {
 	case mType == 0:
-		fmt.Println("0 Request")
 		n.onReceiveRequest(msg)
 
 		case mType == 1:
-			fmt.Println("1 Reply")
 			n.onReceiveReply(msg)
 
 		case mType == 2:
-			fmt.Println("2 Release")
+			n.onReceiveRelease(msg)
 		}
 
 		//Request MessageType = 0
@@ -274,13 +312,13 @@ func (n *Node) listen(){
 	for {
 		select {
 			case msg := <- n.nodeChannel:
-				go n.onMessageReceived(msg)
+				go n.onReceivedMessage(msg)
 		}
 	}
 }
 
 //Define constants here
-const NUM_NODES int = 10;
+const NUM_NODES int = 3;
 
 func main() {
 //	TODO: Create a global address book
@@ -300,14 +338,14 @@ func main() {
 		go globalNodeMap[i].listen()
 	}
 
-	for i:=1; i<=NUM_NODES; i++ {
+	for i:=1; i<=3; i++ {
 		numSeconds := rand.Intn(10)
 		time.Sleep(time.Duration(numSeconds) * time.Second)
 		//Insert a random probability
 		go globalNodeMap[i].requestCS()
 	}
 
-	time.Sleep(time.Duration(30) * time.Second)
+	time.Sleep(time.Duration(60) * time.Second)
 	// How to decide who wants to enter the critical section?
 
 }
