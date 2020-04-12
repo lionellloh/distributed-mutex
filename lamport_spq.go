@@ -9,8 +9,8 @@ import "fmt"
 /*
 
 Using the GO language, implement the following distributed mutual exclusion protocols using at least ten (10) nodes:
-1. (10 marks) Lamport’s shared priority queue without Ricart and Agrawala’s optimization.
-2. (10 marks) Lamport’s shared priority queue with Ricart and Agrawala’s optimization.
+1. (10 marks) Lamport’s shared timestamp queue without Ricart and Agrawala’s optimization.
+2. (10 marks) Lamport’s shared timestamp queue with Ricart and Agrawala’s optimization.
 3. (5 marks) Centralized server protocol.
 
 (15 marks) Compare the performance of the three implementations (in terms of time). In particular, increase the
@@ -26,6 +26,9 @@ type Node struct {
 	nodeChannel chan Message
 	pq []Message
 	ptrMap map[int] *Node
+	//A map to track the replies it has received for its own timestamp
+	//{requestTimeStamp: {1: True} etc}
+	replyTracker map[int] map[int] bool
 }
 
 type MessageType int
@@ -37,10 +40,17 @@ const (
 
 type Message struct {
 	messageType MessageType
-	message string
-	receiverID int
-	priority int
+	message     string
+	senderID    int
+	timestamp   int
+	//[id, timestamp]
+	replyTarget ReplyTarget
 
+}
+
+type ReplyTarget struct {
+	targetID int
+	timestamp int
 }
 
 //Constructor functions
@@ -48,13 +58,16 @@ type Message struct {
 func NewNode(id int) *Node {
 	channel := make(chan Message)
 	var pq []Message
-	n := Node{id, 0, channel, pq, nil}
+	//Create a blank map to track
+	var replyTracker = map[int] map[int] bool{}
+	n := Node{id, 0, channel, pq, nil, replyTracker}
 
 	return &n
 }
 
-func NewMessage(messageType MessageType, message string, receiverID int, priority int) *Message {
-	m := Message{messageType, message, receiverID, priority}
+func NewMessage(messageType MessageType, message string, senderID int, priority int) *Message {
+	rt := ReplyTarget{nil, nil}
+	m := Message{messageType, message, senderID, priority, rt}
 
 	return &m
 }
@@ -73,15 +86,73 @@ func (n *Node) enqueue(m Message){
 //TODO: request to enter CS
 //TODO: How to simulate a node's need to enter the CS?
 func (n *Node) requestCS(){
-	// do some switch thing here
+	requestMsg := Message{
+		messageType: 1,
+		message:     "",
+		senderID:    n.id,
+		timestamp:   n.logicalClock,
+	}
+	n.enqueue(requestMsg)
+	otherNodes := map[int] bool{}
+	for nodeId, _ := range n.ptrMap {
+		if nodeId == n.id {
+			continue
+		}
+		otherNodes[nodeId] = false
+
+	}
+	n.replyTracker[n.logicalClock] = otherNodes
+	n.broadcastMessage(requestMsg)
 
 }
 
-func (n *Node) onReceiveRequest(msg Message){
+func (n *Node) replyMessage(receivedMsg Message){
+	replyMessage := Message{
+		messageType: 1,
+		message:     "",
+		senderID:    n.id,
+		timestamp:   n.logicalClock,
+		replyTarget: ReplyTarget{
+			targetID:  receivedMsg.senderID,
+			timestamp: receivedMsg.timestamp,
+		},
+	}
 
+	n.sendMessage(replyMessage, replyMessage.senderID)
+}
+
+func (n *Node) onReceiveRequest(msg Message){
+	//Check if i has received a reply from machine j for an earlier request
 	// assert that the request's messageType = 0
+	for requestTS, replyMap := range n.replyTracker {
+		if requestTS < msg.timestamp {
+			//Received the necessary reply
+			if replyMap[msg.senderID] {
+				n.replyMessage(msg)
+			}
+
+		} else if requestTS == msg.timestamp && n.id < msg.senderID {
+			//Received the necessary reply
+			if replyMap[msg.senderID] {
+				n.replyMessage(msg)
+			}
+		} else {
+		//	no earlier request
+			n.replyMessage(msg)
+		}
+	}
+
+	n.enqueue(msg)
+}
+
+func (n *Node) onReceiveReply(msg Message){
+	//Need to note for which Id is the message for
+
 	n.pq = append(n.pq, msg)
 
+}
+
+func (n *Node) onReceiveRelease(msg Message) {
 
 }
 
@@ -101,7 +172,8 @@ func (n *Node) broadcastMessage(msg Message){
 
 }
 
-func (n *Node) sendMessage(msg Message, receiver Node){
+func (n *Node) sendMessage(msg Message, receiverID int){
+	receiver := n.ptrMap[receiverID]
 	receiver.nodeChannel <- msg
 }
 
@@ -110,13 +182,15 @@ func (n *Node) onMessageReceived(msg Message){
 	//Message is a request by another node
 	switch mType := msg.messageType; {
 	case mType == 0:
-		fmt.Println("0")
+		fmt.Println("0 Request")
+		n.onReceiveRequest(msg)
 
 	case mType == 1:
-		fmt.Println("1")
+		fmt.Println("1 Reply")
+		n.onReceiveReply(msg)
 
 	case mType == 2:
-		fmt.Println("2")
+		fmt.Println("2 Release")
 	}
 
 	//Request MessageType = 0
