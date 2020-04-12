@@ -1,6 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"math/rand"
+	"time"
+)
 
 //Code for implementing Distributed Mutual Exclusion through Lamport's Shared Priority Queue
 
@@ -26,9 +30,11 @@ type Node struct {
 	nodeChannel chan Message
 	pq []Message
 	ptrMap map[int] *Node
-	//A map to track the replies it has received for its own timestamp
-	//{requestTimeStamp: {1: True} etc}
+	//A map to track the replies the node has received for its own request stamped with timestamp t
+	//{requestTimeStamp: {nodeId: True} etc}
 	replyTracker map[int] map[int] bool
+	//requestTimeStamp: {nodeId: []Message}
+	pendingReplies map[int] []Message
 }
 
 type MessageType int
@@ -60,13 +66,13 @@ func NewNode(id int) *Node {
 	var pq []Message
 	//Create a blank map to track
 	var replyTracker = map[int] map[int] bool{}
-	n := Node{id, 0, channel, pq, nil, replyTracker}
+	n := Node{id, 0, channel, pq, nil, replyTracker, map[int] []Message{}}
 
 	return &n
 }
 
 func NewMessage(messageType MessageType, message string, senderID int, priority int) *Message {
-	rt := ReplyTarget{nil, nil}
+	rt := ReplyTarget{-1, -1}
 	m := Message{messageType, message, senderID, priority, rt}
 
 	return &m
@@ -86,6 +92,7 @@ func (n *Node) enqueue(m Message){
 //TODO: request to enter CS
 //TODO: How to simulate a node's need to enter the CS?
 func (n *Node) requestCS(){
+	fmt.Printf("Node %d is requesting to enter the CS \n", n.id)
 	requestMsg := Message{
 		messageType: 1,
 		message:     "",
@@ -106,6 +113,26 @@ func (n *Node) requestCS(){
 
 }
 
+//Enter criticial section
+func (n *Node) enterCS(msg Message) {
+	//msg should be the request that is being granted the CS now
+	numSeconds := rand.Intn(10)
+	fmt.Printf("Node %s is entering critical section for %d seconds for msg with priority %d", n.id, numSeconds, msg.timestamp)
+	time.Sleep(time.Duration(numSeconds) * time.Second)
+	fmt.Printf("Node %s is done with critical section for %d seconds", numSeconds)
+
+	releaseMessage := Message{
+		messageType: 2,
+		message:     "",
+		senderID:    n.id,
+		timestamp:   n.logicalClock,
+		replyTarget: ReplyTarget{},
+	}
+	n.broadcastMessage(releaseMessage)
+	delete(n.replyTracker, msg.timestamp)
+	n.pq = n.pq[1:]
+}
+
 func (n *Node) replyMessage(receivedMsg Message){
 	replyMessage := Message{
 		messageType: 1,
@@ -124,50 +151,95 @@ func (n *Node) replyMessage(receivedMsg Message){
 func (n *Node) onReceiveRequest(msg Message){
 	//Check if i has received a reply from machine j for an earlier request
 	// assert that the request's messageType = 0
+	var replied bool = false
 	for requestTS, replyMap := range n.replyTracker {
 		if requestTS < msg.timestamp {
 			//Received the necessary reply
 			if replyMap[msg.senderID] {
+				//TODO: need goroutine?
 				n.replyMessage(msg)
+				replied = true
 			}
 
 		} else if requestTS == msg.timestamp && n.id < msg.senderID {
-			//Received the necessary reply
+			//Tiebreaker - there is a higher priority request AND ascertained that we received the necessary reply
 			if replyMap[msg.senderID] {
 				n.replyMessage(msg)
+				replied = true
 			}
 		} else {
 		//	no earlier request
 			n.replyMessage(msg)
+			replied = true
 		}
 	}
 
+	if !replied {
+		//Add to a map of pending replies
+		n.pendingReplies[msg.senderID] = append(n.pendingReplies[msg.senderID], msg)
+	}
+
+
+	//TODO: check if we need to enqueue no matter what - think so
 	n.enqueue(msg)
 }
 
+func (n *Node) allReplied(timestamp int) bool {
+	for _, replyStatus := range n.replyTracker[timestamp] {
+		if replyStatus == false {
+			return false
+		}
+	}
+	return true
+}
+
 func (n *Node) onReceiveReply(msg Message){
-	//Need to note for which Id is the message for
+	//Keep track in the replyTracker
+	n.replyTracker[msg.replyTarget.timestamp][msg.senderID] = true
+	//Need to check if the node that replied has a pending request
+	for _, msg := range n.pendingReplies[msg.senderID] {
+		fmt.Printf("Node %s has a message waiting for reply...", msg.senderID)
+		n.onReceiveRequest(msg)
+	}
+	// Check if everyone has replied this node
+	if n.allReplied(msg.replyTarget.timestamp)  {
+		firstRequest := n.pq[0]
+		if firstRequest.senderID == n.id && firstRequest.timestamp == msg.replyTarget.timestamp {
+			//	TODO: Go Routine?
+			n.enterCS(firstRequest)
+		}
 
-	n.pq = append(n.pq, msg)
 
+	}
 }
 
 func (n *Node) onReceiveRelease(msg Message) {
+	if msg.senderID == n.pq[0].senderID {
 
-}
+	} else {
+		fmt.Printf("Release msg [Node %s] is not sent by the first request's " +
+			"sender [Node %s] \n", msg.senderID, n.pq[0].senderID)
 
-func (n *Node) exitCS(){
-	// sendMessage to everyone here
+		return
+	}
+	n.pq = n.pq[1:]
+	firstRequest := n.pq[0]
+	if firstRequest.senderID == n.id{
+		if n.allReplied(n.pq[0].timestamp){
+			n.enterCS(firstRequest)
+		}
+	}
 }
 
 
 func (n *Node) broadcastMessage(msg Message){
 	for nodeId, nodeAddr := range n.ptrMap {
+		fmt.Println(n.id, nodeId)
 		if nodeId == n.id {
 			continue
 		}
-		fmt.Printf("Sending to %s at %s", nodeId, nodeAddr)
-		(*nodeAddr).nodeChannel <- msg
+		fmt.Printf("Node %d sending to Node %d at %p \n", n.id, nodeId, nodeAddr)
+		go n.sendMessage(msg, nodeId)
 	}
 
 }
@@ -185,25 +257,24 @@ func (n *Node) onMessageReceived(msg Message){
 		fmt.Println("0 Request")
 		n.onReceiveRequest(msg)
 
-	case mType == 1:
-		fmt.Println("1 Reply")
-		n.onReceiveReply(msg)
+		case mType == 1:
+			fmt.Println("1 Reply")
+			n.onReceiveReply(msg)
 
-	case mType == 2:
-		fmt.Println("2 Release")
+		case mType == 2:
+			fmt.Println("2 Release")
+		}
+
+		//Request MessageType = 0
+		//Reply MessageType = 1
+		//Release MessageType = 2
 	}
-
-	//Request MessageType = 0
-	//Reply MessageType = 1
-	//Release MessageType = 2
-
-}
 
 func (n *Node) listen(){
 	for {
 		select {
 			case msg := <- n.nodeChannel:
-				n.onMessageReceived(msg)
+				go n.onMessageReceived(msg)
 		}
 	}
 }
@@ -225,6 +296,18 @@ func main() {
 		globalNodeMap[i].setPtrMap(globalNodeMap)
 	}
 
+	for i:=1; i<=NUM_NODES; i++ {
+		go globalNodeMap[i].listen()
+	}
+
+	for i:=1; i<=NUM_NODES; i++ {
+		numSeconds := rand.Intn(10)
+		time.Sleep(time.Duration(numSeconds) * time.Second)
+		//Insert a random probability
+		go globalNodeMap[i].requestCS()
+	}
+
+	time.Sleep(time.Duration(30) * time.Second)
 	// How to decide who wants to enter the critical section?
 
 }
