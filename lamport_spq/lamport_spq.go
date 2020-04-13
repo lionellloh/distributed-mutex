@@ -161,7 +161,7 @@ func (n *Node) enterCS(msg Message) {
 	//msg should be the request that is being granted the CS now
 
 	//Simulate a random duration for the CS
-	numSeconds := rand.Intn(5)
+	numSeconds := rand.Intn(3)
 	fmt.Printf("[Node %d] Entering critical section for %d seconds for msg with priority %d \n", n.id, numSeconds, msg.timestamp)
 	time.Sleep(time.Duration(numSeconds) * time.Second)
 	fmt.Printf("[Node %d] Finished critical section in %d seconds \n", n.id, numSeconds)
@@ -326,8 +326,8 @@ func (n *Node) sendMessage(msg Message, receiverID int) {
 	fmt.Printf("[Node %d] Sending a <%s> message to Node %d at MemAddr %p \n", n.id,
 		msg.messageType, receiverID, n.ptrMap[receiverID])
 	//Simulate uncertain latency and asynchronous nature of message passing
-	//numMilliSeconds := rand.Intn(2000)
-	//time.Sleep(time.Duration(numMilliSeconds) * time.Millisecond)
+	numMilliSeconds := rand.Intn(2000)
+	time.Sleep(time.Duration(numMilliSeconds) * time.Millisecond)
 	receiver := n.ptrMap[receiverID]
 	receiver.nodeChannel <- msg
 }

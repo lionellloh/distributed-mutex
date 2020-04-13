@@ -1,4 +1,4 @@
-package optimised_lamport_spq
+package main
 
 import (
 	"bufio"
@@ -37,9 +37,6 @@ type Node struct {
 	//A map to track the replies the node has received for its own request stamped with timestamp t
 	//{requestTimeStamp: {nodeId: True} etc}
 	replyTracker map[int]map[int]bool
-
-	//Keep tracking of pending replies
-	pendingReplies map[int][]Message
 	globalWG *sync.WaitGroup
 	quit chan int
 }
@@ -49,7 +46,7 @@ type MessageType string
 const (
 	Request MessageType = "Request"
 	Reply   MessageType = "Reply"
-	Release MessageType = "Release"
+	Release MessageType = "ReleaseReply"
 )
 
 type Message struct {
@@ -74,7 +71,7 @@ func NewNode(id int) *Node {
 	//Create a blank map to track
 	var replyTracker = map[int]map[int]bool{}
 	n := Node{id, 0, channel, pq, nil,
-		replyTracker, map[int][]Message{}, &sync.WaitGroup{}, make(chan int)}
+		replyTracker, &sync.WaitGroup{}, make(chan int)}
 
 	return &n
 }
@@ -156,24 +153,31 @@ func (n *Node) requestCS() {
 //Enter criticial section
 func (n *Node) enterCS(msg Message) {
 	defer n.globalWG.Done()
+	//Should have at least 1 request
+	fmt.Printf("[Node %d] <Entering CS> %s \n", n.id, stringPQ(n.pq))
 	n.dequeue(msg.senderID) //dequeue at the start to avoid race conditions
-	fmt.Printf("[Node %d] <Entering CS> PQ: %s \n", n.id, stringPQ(n.pq))
 	//msg should be the request that is being granted the CS now
 
 	//Simulate a random duration for the CS
-	numSeconds := rand.Intn(5)
+	numSeconds := rand.Intn(3)
 	fmt.Printf("[Node %d] Entering critical section for %d seconds for msg with priority %d \n", n.id, numSeconds, msg.timestamp)
 	time.Sleep(time.Duration(numSeconds) * time.Second)
 	fmt.Printf("[Node %d] Finished critical section in %d seconds \n", n.id, numSeconds)
 	n.logicalClock += 1
-	releaseMessage := Message{
-		messageType: "Release",
-		message:     "",
-		senderID:    n.id,
-		timestamp:   n.logicalClock,
-		replyTarget: ReplyTarget{},
+	fmt.Printf("[Node %d] After finishing CS, PQ: %s \n", n.id, stringPQ(n.pq))
+	for _, reqMsg := range n.pq {
+		releaseMessage := Message{
+			messageType: "ReleaseReply",
+			message:     "",
+			senderID:    n.id,
+			timestamp:   n.logicalClock,
+			replyTarget: ReplyTarget{reqMsg.senderID, reqMsg.timestamp},
+		}
+
+		go n.sendMessage(releaseMessage, reqMsg.senderID)
 	}
-	n.broadcastMessage(releaseMessage)
+	//Empty the PQ
+	n.pq = []Message{}
 
 }
 
@@ -231,6 +235,8 @@ func (n *Node) allReplied(timestamp int) bool {
 			return false
 		}
 	}
+	//Moved this here so we do not have a case where multiple replies trigger a check a
+
 	return true
 }
 
@@ -249,7 +255,7 @@ func stringPQ(pq []Message) string {
 	if len(pq) == 0 {
 		return "PQ: | Empty |"
 	}
-	var ret string = "|"
+	var ret = "|"
 	for _, msg := range pq {
 		ret += fmt.Sprintf("PQ: [TS: %d] by Node %d| ", msg.timestamp, msg.senderID)
 	}
@@ -264,41 +270,44 @@ func (n *Node) onReceiveReply(msg Message) {
 		n.replyTracker[ts] = n.getEmptyReplyMap()
 	}
 	n.replyTracker[msg.replyTarget.timestamp][msg.senderID] = true
-	//Need to check if the node that replied has a pending request
-	for _, reqMsg := range n.pendingReplies[msg.senderID] {
-		fmt.Printf("[Node %d] Can now reply the request from [Node %d] \n", n.id, reqMsg.senderID)
-		n.onReceiveRequest(reqMsg)
-	}
 	// Check if everyone has replied this node
 	if n.allReplied(msg.replyTarget.timestamp) {
 		//reset
-		delete(n.replyTracker, msg.timestamp)
+		delete(n.replyTracker, msg.replyTarget.timestamp)
 		fmt.Printf("[Node %d] All replies have been received for Request with TS: %d \n", n.id, msg.replyTarget.timestamp)
 		firstRequest := n.pq[0]
 		n.enterCS(firstRequest)
 	}
 }
-
-func (n *Node) onReceiveRelease(msg Message) {
-	n.dequeue(msg.senderID)
-
-	if len(n.pq) > 0 {
-		firstRequest := n.pq[0]
-		if firstRequest.senderID == n.id {
-			if n.allReplied(n.pq[0].timestamp) {
-				n.enterCS(firstRequest)
-			}
-		}
+//New Handler function to due with the combined message
+func (n *Node) onReceiveReleaseReply(msg Message) {
+	//Mark the reply map
+	ts := msg.replyTarget.timestamp
+	//if the ts does not exist in the replyTracker, create a entry for it
+	if _, ok := n.replyTracker[ts]; !ok {
+		n.replyTracker[ts] = n.getEmptyReplyMap()
+	}
+	n.replyTracker[msg.replyTarget.timestamp][msg.senderID] = true
+	fmt.Println(n.replyTracker[msg.replyTarget.timestamp])
+	fmt.Printf("[Node %d] PQ: %s \n", n.id, stringPQ(n.pq))
+	if n.allReplied(n.pq[0].timestamp) {
+		//Reset
+		delete(n.replyTracker, msg.replyTarget.timestamp)
+		n.enterCS(n.pq[0])
 	}
 }
 
 func (n *Node) broadcastMessage(msg Message) {
-	for nodeId, _ := range n.ptrMap {
-		if nodeId == n.id {
-			continue
+
+	{
+		for nodeId, _ := range n.ptrMap {
+			if nodeId == n.id {
+				continue
+			}
+			go n.sendMessage(msg, nodeId)
 		}
-		go n.sendMessage(msg, nodeId)
 	}
+
 
 }
 
@@ -306,8 +315,8 @@ func (n *Node) sendMessage(msg Message, receiverID int) {
 	fmt.Printf("[Node %d] Sending a <%s> message to Node %d at MemAddr %p \n", n.id,
 		msg.messageType, receiverID, n.ptrMap[receiverID])
 	//Simulate uncertain latency and asynchronous nature of message passing
-	//numMilliSeconds := rand.Intn(2000)
-	//time.Sleep(time.Duration(numMilliSeconds) * time.Millisecond)
+	numMilliSeconds := rand.Intn(2000)
+	time.Sleep(time.Duration(numMilliSeconds) * time.Millisecond)
 	receiver := n.ptrMap[receiverID]
 	receiver.nodeChannel <- msg
 }
@@ -329,8 +338,8 @@ func (n *Node) onReceivedMessage(msg Message) {
 	case mType == "Reply":
 		n.onReceiveReply(msg)
 
-	case mType == "Release":
-		n.onReceiveRelease(msg)
+	case mType == "ReleaseReply":
+		n.onReceiveReleaseReply(msg)
 	}
 
 	//Request MessageType = 0
@@ -399,10 +408,12 @@ func main() {
 		go globalNodeMap[i].listen()
 	}
 
+	start := time.Now()
 	if automated {
+
 		for i := 1; i <= NUM_NODES; i++ {
 			//Insert a random probability
-			numSeconds := rand.Intn(10)
+			numSeconds := rand.Intn(2)
 			time.Sleep(time.Duration(numSeconds) * time.Second)
 			go globalNodeMap[i].requestCS()
 		}
@@ -420,9 +431,14 @@ func main() {
 
 
 	wg.Wait()
+	t:= time.Now()
 	time.Sleep(time.Duration(3) * time.Second)
 
-	fmt.Println("All Nodes have entered entered and exited the Critical Section\n Ending programme now \n")
+
+	fmt.Printf("Time Taken: %.2f seconds \n", t.Sub(start).Seconds())
+
+
+	fmt.Println("All Nodes have entered entered and exited the Critical Section\nEnding programme now.\n")
 	for i := 1; i <= NUM_NODES; i++ {
 		globalNodeMap[i].quit <- 1
 	}
