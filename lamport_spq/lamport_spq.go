@@ -282,13 +282,15 @@ func (n *Node) onReceiveReply(msg Message) {
 	}
 	// Check if everyone has replied this node
 	if n.allReplied(msg.replyTarget.timestamp) {
-		//reset
-		delete(n.replyTracker, msg.timestamp)
+
 		fmt.Printf("[Node %d] All replies have been received for Request with TS: %d \n", n.id, msg.replyTarget.timestamp)
 		firstRequest := n.pq[0]
 		if firstRequest.senderID == n.id && firstRequest.timestamp == msg.replyTarget.timestamp {
-			fmt.Printf("[Node %d] Msg with timestamp %d is also at the front of the queue. \n[Node %d] will " +
+			fmt.Printf("[Node %d] Request with timestamp %d is also at the front of the queue. \n[Node %d] will " +
 				"now enter the CS. \n", n.id, msg.replyTarget.timestamp, n.id)
+
+			//reset
+			delete(n.replyTracker, msg.replyTarget.timestamp)
 			n.enterCS(firstRequest)
 		}
 
@@ -302,6 +304,8 @@ func (n *Node) onReceiveRelease(msg Message) {
 		firstRequest := n.pq[0]
 		if firstRequest.senderID == n.id {
 			if n.allReplied(n.pq[0].timestamp) {
+				//reset
+				delete(n.replyTracker, n.pq[0].timestamp)
 				n.enterCS(firstRequest)
 			}
 		}
@@ -418,7 +422,7 @@ func main() {
 	if automated {
 		for i := 1; i <= NUM_NODES; i++ {
 			//Insert a random probability
-			numSeconds := rand.Intn(10)
+			numSeconds := rand.Intn(2)
 			time.Sleep(time.Duration(numSeconds) * time.Second)
 			go globalNodeMap[i].requestCS()
 		}
