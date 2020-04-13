@@ -422,8 +422,6 @@ func main() {
 	if automated {
 		for i := 1; i <= NUM_NODES; i++ {
 			//Insert a random probability
-			numSeconds := rand.Intn(2)
-			time.Sleep(time.Duration(numSeconds) * time.Second)
 			go globalNodeMap[i].requestCS()
 		}
 

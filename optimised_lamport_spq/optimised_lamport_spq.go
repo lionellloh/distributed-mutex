@@ -307,8 +307,6 @@ func (n *Node) broadcastMessage(msg Message) {
 			go n.sendMessage(msg, nodeId)
 		}
 	}
-
-
 }
 
 func (n *Node) sendMessage(msg Message, receiverID int) {
@@ -413,8 +411,6 @@ func main() {
 
 		for i := 1; i <= NUM_NODES; i++ {
 			//Insert a random probability
-			numSeconds := rand.Intn(2)
-			time.Sleep(time.Duration(numSeconds) * time.Second)
 			go globalNodeMap[i].requestCS()
 		}
 
@@ -428,7 +424,6 @@ func main() {
 		}
 
 	}
-
 
 	wg.Wait()
 	t:= time.Now()
