@@ -47,7 +47,7 @@ func (s *Server) dequeue() {
 
 func (s *Server) sendMessage(msg Message, recipientID int) {
 	fmt.Printf("[Server] is sending a %s message to [Node %d] \n", msg.messageType, recipientID)
-	numMilliSeconds := rand.Intn(2000)
+	numMilliSeconds := rand.Intn(1000) + 2000
 	time.Sleep(time.Duration(numMilliSeconds) * time.Millisecond)
 	recipientNode := s.ptrMap[recipientID]
 	recipientNode.nodeChannel <- msg
@@ -84,7 +84,7 @@ func (n *Node) sendMessage(msg Message) {
 
 
 func (n *Node) enterCS(){
-	numSeconds := rand.Intn(3)
+	numSeconds := 1
 	fmt.Printf("[Node %d] is entering CS \n", n.id)
 	time.Sleep(time.Duration(numSeconds) * time.Second)
 
@@ -111,6 +111,8 @@ func (n *Node) listen() {
 			}
 
 		case <- n.quit:
+			fmt.Printf("Quitting")
+			close(n.nodeChannel)
 			return
 		}
 	}
@@ -127,13 +129,15 @@ func (s *Server) listen() {
 	for {
 		select {
 			case <- s.quit:
+				close(s.serverChannel)
 				return
 			case msg := <-s.serverChannel:
 			fmt.Printf("[Server] received a %s message from [Node %d] \n", msg.messageType, msg.senderID)
 			if msg.messageType == "Request" {
-				go s.enqueue(msg)
-				if len(s.queue) == 0 {
-					go s.sendMessage(grantMessage, msg.senderID)
+				s.enqueue(msg)
+				if len(s.queue) == 1 {
+					nextNodeID := s.queue[0].senderID
+					go s.sendMessage(grantMessage, nextNodeID)
 				}
 			} else if msg.messageType == "Release" {
 				s.dequeue()
@@ -182,13 +186,10 @@ func main(){
 	wg.Wait()
 	t:= time.Now()
 	time.Sleep(time.Duration(3) * time.Second)
+
+	fmt.Printf("Number of nodes: %d \n", NUM_NODES)
 	fmt.Printf("Time Taken: %.2f seconds \n", t.Sub(start).Seconds())
 
-	for i := 1; i <= NUM_NODES; i++ {
-		globalNodeMap[i].quit <- 1
-
-	}
-	server.quit <- 1
 	fmt.Println("All Nodes have entered entered and exited the Critical Section\nEnding programme now.\n")
 
 }

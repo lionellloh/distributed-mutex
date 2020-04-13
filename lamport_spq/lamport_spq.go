@@ -103,7 +103,7 @@ func (n *Node) enqueue(newMsg Message) {
 	sort.SliceStable(n.pq, func(i,j int) bool {
 		if n.pq[i].timestamp < n.pq[j].timestamp {
 			return true
-		} else if n.pq[i].timestamp == n.pq[j].timestamp && n.pq[i].senderID < n.pq[i].senderID {
+		} else if n.pq[i].timestamp == n.pq[j].timestamp && n.pq[i].senderID < n.pq[j].senderID {
 			return true
 		} else{
 			return false
@@ -128,17 +128,29 @@ func (n *Node) dequeue(senderID int) {
 }
 
 func (n *Node) requestCS() {
+	n.logicalClock += 1
+
+	if NUM_NODES == 1 {
+		n.enterCS(Message{
+			messageType: "Request",
+			message:     "",
+			senderID:    n.id,
+			timestamp:   n.logicalClock,
+			replyTarget: ReplyTarget{},
+		})
+	}
 
 	fmt.Printf("=======================================\n Node %d is " +
-		"requesting to enter the CS \n =======================================\n", n.id)
+		"requesting to enter the CS \n=======================================\n", n.id)
 	time.Sleep(time.Duration(500) * time.Millisecond)
-	n.logicalClock += 1
+
 	requestMsg := Message{
 		messageType: "Request",
 		message:     "",
 		senderID:    n.id,
 		timestamp:   n.logicalClock,
 	}
+
 	n.enqueue(requestMsg)
 	otherNodes := map[int]bool{}
 	for nodeId, _ := range n.ptrMap {
@@ -161,7 +173,7 @@ func (n *Node) enterCS(msg Message) {
 	//msg should be the request that is being granted the CS now
 
 	//Simulate a random duration for the CS
-	numSeconds := rand.Intn(3)
+	numSeconds := 1
 	fmt.Printf("[Node %d] Entering critical section for %d seconds for msg with priority %d \n", n.id, numSeconds, msg.timestamp)
 	time.Sleep(time.Duration(numSeconds) * time.Second)
 	fmt.Printf("[Node %d] Finished critical section in %d seconds \n", n.id, numSeconds)
@@ -286,6 +298,7 @@ func (n *Node) onReceiveReply(msg Message) {
 		fmt.Printf("[Node %d] All replies have been received for Request with TS: %d \n", n.id, msg.replyTarget.timestamp)
 		firstRequest := n.pq[0]
 		if firstRequest.senderID == n.id && firstRequest.timestamp == msg.replyTarget.timestamp {
+			fmt.Println(firstRequest.senderID, n.id)
 			fmt.Printf("[Node %d] Request with timestamp %d is also at the front of the queue. \n[Node %d] will " +
 				"now enter the CS. \n", n.id, msg.replyTarget.timestamp, n.id)
 
@@ -326,14 +339,14 @@ func (n *Node) sendMessage(msg Message, receiverID int) {
 	fmt.Printf("[Node %d] Sending a <%s> message to Node %d at MemAddr %p \n", n.id,
 		msg.messageType, receiverID, n.ptrMap[receiverID])
 	//Simulate uncertain latency and asynchronous nature of message passing
-	numMilliSeconds := rand.Intn(2000)
+	numMilliSeconds := rand.Intn(1000) + 2000
 	time.Sleep(time.Duration(numMilliSeconds) * time.Millisecond)
 	receiver := n.ptrMap[receiverID]
 	receiver.nodeChannel <- msg
 }
 
 func (n *Node) onReceivedMessage(msg Message) {
-
+	time.Sleep(time.Duration(50) * time.Millisecond)
 	//Taking the max(self.logicalClock, msg.timestamp) + 1
 	if msg.timestamp >= n.logicalClock {
 		n.logicalClock = msg.timestamp + 1
@@ -378,7 +391,7 @@ func main() {
 
 	for {
 		fmt.Printf("There are two ways to run this programme.\n1. Automated [Press 1]\n" +
-			"The Nodes will start to request to enter the Critical Section (CS) sequentially at a randomly spaced interval.\n" +
+			"The Nodes will start to request to enter the Critical Section (CS) concurrently.\n" +
 			"2. Interactive [Press 2] \n" +
 			"You will control when the nodes request to enter the CS by pressing any key on the keyboard to start a Node's request\n")
 
@@ -418,7 +431,7 @@ func main() {
 		globalNodeMap[i].globalWG = &wg
 		go globalNodeMap[i].listen()
 	}
-
+	start := time.Now()
 	if automated {
 		for i := 1; i <= NUM_NODES; i++ {
 			//Insert a random probability
@@ -436,13 +449,14 @@ func main() {
 
 	}
 
-
 	wg.Wait()
+	t:= time.Now()
 	time.Sleep(time.Duration(3) * time.Second)
+	fmt.Printf("Number of nodes: %d \n", NUM_NODES)
+	fmt.Printf("Time Taken: %.2f seconds \n", t.Sub(start).Seconds())
 
-	fmt.Println("All Nodes have entered entered and exited the Critical Section\n Ending programme now \n")
+	fmt.Println("All Nodes have entered entered and exited the Critical Section\nEnding programme now \n")
 	for i := 1; i <= NUM_NODES; i++ {
 		globalNodeMap[i].quit <- 1
 	}
-
 }

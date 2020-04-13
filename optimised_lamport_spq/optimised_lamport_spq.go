@@ -125,11 +125,21 @@ func (n *Node) dequeue(senderID int) {
 }
 
 func (n *Node) requestCS() {
+	n.logicalClock += 1
 
+	if NUM_NODES == 1 {
+		n.enterCS(Message{
+			messageType: "Request",
+			message:     "",
+			senderID:    n.id,
+			timestamp:   n.logicalClock,
+			replyTarget: ReplyTarget{},
+		})
+	}
 	fmt.Printf("=======================================\n Node %d is " +
 		"requesting to enter the CS \n =======================================\n", n.id)
 	time.Sleep(time.Duration(500) * time.Millisecond)
-	n.logicalClock += 1
+
 	requestMsg := Message{
 		messageType: "Request",
 		message:     "",
@@ -159,7 +169,7 @@ func (n *Node) enterCS(msg Message) {
 	//msg should be the request that is being granted the CS now
 
 	//Simulate a random duration for the CS
-	numSeconds := rand.Intn(3)
+	numSeconds := 1
 	fmt.Printf("[Node %d] Entering critical section for %d seconds for msg with priority %d \n", n.id, numSeconds, msg.timestamp)
 	time.Sleep(time.Duration(numSeconds) * time.Second)
 	fmt.Printf("[Node %d] Finished critical section in %d seconds \n", n.id, numSeconds)
@@ -201,6 +211,7 @@ func (n *Node) replyMessage(receivedMsg Message) {
 func (n *Node) onReceiveRequest(msg Message) {
 	//Check if i has received a reply from machine j for an earlier request
 	// assert that the request's messageType = 0
+	time.Sleep(time.Duration(50) * time.Millisecond)
 	var earlierRequestExists bool = false
 
 	for _, requestMsg := range n.pq {
@@ -288,7 +299,6 @@ func (n *Node) onReceiveReleaseReply(msg Message) {
 		n.replyTracker[ts] = n.getEmptyReplyMap()
 	}
 	n.replyTracker[msg.replyTarget.timestamp][msg.senderID] = true
-	fmt.Println(n.replyTracker[msg.replyTarget.timestamp])
 	fmt.Printf("[Node %d] PQ: %s \n", n.id, stringPQ(n.pq))
 	if n.allReplied(n.pq[0].timestamp) {
 		//Reset
@@ -313,7 +323,7 @@ func (n *Node) sendMessage(msg Message, receiverID int) {
 	fmt.Printf("[Node %d] Sending a <%s> message to Node %d at MemAddr %p \n", n.id,
 		msg.messageType, receiverID, n.ptrMap[receiverID])
 	//Simulate uncertain latency and asynchronous nature of message passing
-	numMilliSeconds := rand.Intn(2000)
+	numMilliSeconds := rand.Intn(1000) + 2000
 	time.Sleep(time.Duration(numMilliSeconds) * time.Millisecond)
 	receiver := n.ptrMap[receiverID]
 	receiver.nodeChannel <- msg
@@ -357,7 +367,7 @@ func (n *Node) listen() {
 }
 
 //Define constants here
-const NUM_NODES int = 10
+const NUM_NODES int = 1
 
 func main() {
 	var wg sync.WaitGroup
@@ -365,7 +375,7 @@ func main() {
 
 	for {
 		fmt.Printf("There are two ways to run this programme.\n1. Automated [Press 1]\n" +
-			"The Nodes will start to request to enter the Critical Section (CS) sequentially at a randomly spaced interval.\n" +
+			"The Nodes will start to request to enter the Critical Section (CS) concurrently.\n" +
 			"2. Interactive [Press 2] \n" +
 			"You will control when the nodes request to enter the CS by pressing any key on the keyboard to start a Node's request\n")
 
@@ -410,7 +420,6 @@ func main() {
 	if automated {
 
 		for i := 1; i <= NUM_NODES; i++ {
-			//Insert a random probability
 			go globalNodeMap[i].requestCS()
 		}
 
@@ -429,7 +438,7 @@ func main() {
 	t:= time.Now()
 	time.Sleep(time.Duration(3) * time.Second)
 
-
+	fmt.Printf("Number of nodes: %d \n", NUM_NODES)
 	fmt.Printf("Time Taken: %.2f seconds \n", t.Sub(start).Seconds())
 
 
