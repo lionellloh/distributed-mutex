@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -35,7 +36,8 @@ type Node struct {
 	//A map to track the replies the node has received for its own request stamped with timestamp t
 	//{requestTimeStamp: {nodeId: True} etc}
 	replyTracker map[int]map[int]bool
-	//requestTimeStamp: {nodeId: []Message}
+
+	//Keep tracking of pending replies
 	pendingReplies map[int][]Message
 }
 
@@ -87,36 +89,41 @@ func (n *Node) setPtrMap(ptrMap map[int]*Node) {
 
 func (n *Node) enqueue(newMsg Message) {
 	//TODO: Write the logic for inserting a new message in the correct position
-	var insertPos int
-	var foundPos bool
-	for i, m := range(n.pq) {
-		if newMsg.timestamp < m.timestamp {
-			insertPos = i
-			foundPos = true
-		} else if newMsg.timestamp == m.timestamp && newMsg.senderID < m.senderID {
-			insertPos = i
-			foundPos = true
+	fmt.Printf("[Node %d] BEFORE: %s \n", n.id, stringPQ(n.pq))
+
+	for _, msg := range n.pq {
+		if newMsg.senderID == msg.senderID {
+			return
 		}
 	}
-
-	if ! foundPos {
-		insertPos = len(n.pq)
-	}
-
-	fmt.Println("BEFORE: ", printPQ(n.pq))
-	n.pq = append(n.pq, Message{
-		messageType: "",
-		message:     "",
-		senderID:    -1,
-		timestamp:   -1,
-		replyTarget: ReplyTarget{},
+	n.pq = append(n.pq, newMsg)
+	sort.SliceStable(n.pq, func(i,j int) bool {
+		if n.pq[i].timestamp < n.pq[j].timestamp {
+			return true
+		} else if n.pq[i].timestamp == n.pq[j].timestamp && n.pq[i].senderID < n.pq[i].senderID {
+			return true
+		} else{
+			return false
+		}
 	})
 
+	fmt.Printf("[Node %d] AFTER: %s \n", n.id, stringPQ(n.pq))
+}
+//One MSG from a node in the pq at any one time
+func (n *Node) dequeue(senderID int) {
+	for i, msg := range n.pq {
+		if msg.senderID == senderID {
+			if i >= len(n.pq) -1 { //Handle edge case where it's the only element or last element
+				n.pq = n.pq[:i]
 
-	copy(n.pq[insertPos + 1: ], n.pq[insertPos : ])
-	n.pq[insertPos] = newMsg
-	fmt.Println("AFTER: ", printPQ(n.pq))
-
+			} else {
+				n.pq = append(n.pq[:i], n.pq[i+1:]...)
+			}
+			return
+		}
+	}
+	fmt.Println(senderID, stringPQ(n.pq))
+	fmt.Println("NOT FOUNDDDDNOT FOUNDDDDNOT FOUNDDDDNOT FOUNDDDDNOT FOUNDDDDNOT FOUNDDDD")
 }
 
 //TODO: request to enter CS
@@ -148,7 +155,7 @@ func (n *Node) requestCS() {
 
 //Enter criticial section
 func (n *Node) enterCS(msg Message) {
-	fmt.Printf("[Node %d] <Entering CS> PQ: %s \n", n.id, printPQ(n.pq))
+	fmt.Printf("[Node %d] <Entering CS> PQ: %s \n", n.id, stringPQ(n.pq))
 	//msg should be the request that is being granted the CS now
 
 	//Simulate a random duration for the CS
@@ -166,7 +173,7 @@ func (n *Node) enterCS(msg Message) {
 	}
 	n.broadcastMessage(releaseMessage)
 	delete(n.replyTracker, msg.timestamp)
-	n.pq = n.pq[1:]
+	n.dequeue(n.id)
 }
 
 func (n *Node) replyMessage(receivedMsg Message) {
@@ -218,10 +225,12 @@ func (n *Node) onReceiveRequest(msg Message) {
 	if replied == false {
 		//Add to a map of pending replies
 		n.pendingReplies[msg.senderID] = append(n.pendingReplies[msg.senderID], msg)
+	} else {
+		n.enqueue(msg)
 	}
 	//TODO: check if we need to enqueue no matter what - think so
-	n.enqueue(msg)
-	fmt.Printf("Node %d's PQ: %s \n", n.id, printPQ(n.pq))
+
+	fmt.Printf("Node %d's PQ: %s \n", n.id, stringPQ(n.pq))
 }
 
 func (n *Node) allReplied(timestamp int) bool {
@@ -244,7 +253,7 @@ func (n *Node) getEmptyReplyMap() map[int]bool {
 	return ret
 }
 
-func printPQ(pq []Message) string {
+func stringPQ(pq []Message) string {
 	var ret string = "|"
 	for _, msg := range pq {
 		ret += fmt.Sprintf("[TS: %d] by Node %d| ", msg.timestamp, msg.senderID)
@@ -261,9 +270,9 @@ func (n *Node) onReceiveReply(msg Message) {
 	}
 	n.replyTracker[msg.replyTarget.timestamp][msg.senderID] = true
 	//Need to check if the node that replied has a pending request
-	for _, msg := range n.pendingReplies[msg.senderID] {
-		fmt.Printf("[Node %d] Node has a request waiting for reply...", msg.senderID)
-		n.onReceiveRequest(msg)
+	for _, reqMsg := range n.pendingReplies[msg.senderID] {
+		fmt.Printf("[Node %d] Can now reply the request from [Node %d] \n", n.id, reqMsg.senderID)
+		n.onReceiveRequest(reqMsg)
 	}
 	// Check if everyone has replied this node
 	if n.allReplied(msg.replyTarget.timestamp) {
@@ -280,17 +289,11 @@ func (n *Node) onReceiveReply(msg Message) {
 }
 
 func (n *Node) onReceiveRelease(msg Message) {
-	if msg.senderID == n.pq[0].senderID {
-		fmt.Printf("[Node %d] Before Length: %d \n", n.id, len(n.pq))
-		n.pq = n.pq[1:]
-		fmt.Printf("[Node %d] After Length: %d \n", n.id, len(n.pq))
-
-	} else {
-		fmt.Printf("[Node %d] Release msg from [Node %d] is not sent by the first request's "+
-			"sender [Node %d] \n", n.id, msg.senderID, n.pq[0].senderID)
-
-		return
-	}
+	fmt.Printf("[Node %d] Before PQ Size: %d \n", n.id, len(n.pq))
+	fmt.Println(stringPQ(n.pq))
+	n.dequeue(msg.senderID)
+	fmt.Printf("[Node %d] After PQ Size: %d \n", n.id, len(n.pq))
+	fmt.Println(stringPQ(n.pq))
 
 	if len(n.pq) > 0 {
 		firstRequest := n.pq[0]
@@ -308,7 +311,6 @@ func (n *Node) broadcastMessage(msg Message) {
 		if nodeId == n.id {
 			continue
 		}
-
 		go n.sendMessage(msg, nodeId)
 	}
 
@@ -318,8 +320,8 @@ func (n *Node) sendMessage(msg Message, receiverID int) {
 	fmt.Printf("[Node %d] Sending a <%s> message to Node %d at MemAddr %p \n", n.id,
 		msg.messageType, receiverID, n.ptrMap[receiverID])
 	//Simulate uncertain latency and asynchronous nature of message passing
-	numMilliSeconds := rand.Intn(2000)
-	time.Sleep(time.Duration(numMilliSeconds) * time.Millisecond)
+	//numMilliSeconds := rand.Intn(2000)
+	//time.Sleep(time.Duration(numMilliSeconds) * time.Millisecond)
 	receiver := n.ptrMap[receiverID]
 	receiver.nodeChannel <- msg
 }
