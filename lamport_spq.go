@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"math/rand"
+	"os"
 	"time"
 )
 
@@ -37,12 +39,12 @@ type Node struct {
 	pendingReplies map[int][]Message
 }
 
-type MessageType int
+type MessageType string
 
 const (
-	Request MessageType = 0
-	Reply   MessageType = 1
-	Release MessageType = 2
+	Request MessageType = "Request"
+	Reply   MessageType = "Reply"
+	Release MessageType = "Release"
 )
 
 type Message struct {
@@ -83,18 +85,49 @@ func (n *Node) setPtrMap(ptrMap map[int]*Node) {
 	n.ptrMap = ptrMap
 }
 
-func (n *Node) enqueue(m Message) {
+func (n *Node) enqueue(newMsg Message) {
 	//TODO: Write the logic for inserting a new message in the correct position
-	n.pq = append(n.pq, m)
+	var insertPos int
+	var foundPos bool
+	for i, m := range(n.pq) {
+		if newMsg.timestamp < m.timestamp {
+			insertPos = i
+			foundPos = true
+		} else if newMsg.timestamp == m.timestamp && newMsg.senderID < m.senderID {
+			insertPos = i
+			foundPos = true
+		}
+	}
+
+	if ! foundPos {
+		insertPos = len(n.pq)
+	}
+
+	fmt.Println("BEFORE: ", printPQ(n.pq))
+	n.pq = append(n.pq, Message{
+		messageType: "",
+		message:     "",
+		senderID:    -1,
+		timestamp:   -1,
+		replyTarget: ReplyTarget{},
+	})
+
+
+	copy(n.pq[insertPos + 1: ], n.pq[insertPos : ])
+	n.pq[insertPos] = newMsg
+	fmt.Println("AFTER: ", printPQ(n.pq))
+
 }
 
 //TODO: request to enter CS
 //TODO: How to simulate a node's need to enter the CS?
 func (n *Node) requestCS() {
-	fmt.Printf("Node %d is requesting to enter the CS \n", n.id)
+	fmt.Printf("=======================================\n Node %d is " +
+		"requesting to enter the CS \n =======================================\n", n.id)
+	time.Sleep(time.Duration(500) * time.Millisecond)
 	n.logicalClock += 1
 	requestMsg := Message{
-		messageType: 0,
+		messageType: "Request",
 		message:     "",
 		senderID:    n.id,
 		timestamp:   n.logicalClock,
@@ -115,14 +148,17 @@ func (n *Node) requestCS() {
 
 //Enter criticial section
 func (n *Node) enterCS(msg Message) {
+	fmt.Printf("[Node %d] <Entering CS> PQ: %s \n", n.id, printPQ(n.pq))
 	//msg should be the request that is being granted the CS now
+
+	//Simulate a random duration for the CS
 	numSeconds := rand.Intn(5)
-	fmt.Printf("Node %d is entering critical section for %d seconds for msg with priority %d \n", n.id, numSeconds, msg.timestamp)
+	fmt.Printf("[Node %d] Entering critical section for %d seconds for msg with priority %d \n", n.id, numSeconds, msg.timestamp)
 	time.Sleep(time.Duration(numSeconds) * time.Second)
-	fmt.Printf("Node %d is done with critical section for %d seconds \n", n.id, numSeconds)
+	fmt.Printf("[Node %d] Finished critical section in %d seconds \n", n.id, numSeconds)
 	n.logicalClock += 1
 	releaseMessage := Message{
-		messageType: 2,
+		messageType: "Release",
 		message:     "",
 		senderID:    n.id,
 		timestamp:   n.logicalClock,
@@ -137,7 +173,7 @@ func (n *Node) replyMessage(receivedMsg Message) {
 	fmt.Printf("Node %d is replying Node %d \n", n.id, receivedMsg.senderID)
 	n.logicalClock += 1
 	replyMessage := Message{
-		messageType: 1,
+		messageType: "Reply",
 		message:     "",
 		senderID:    n.id,
 		timestamp:   n.logicalClock,
@@ -154,7 +190,6 @@ func (n *Node) onReceiveRequest(msg Message) {
 	//Check if i has received a reply from machine j for an earlier request
 	// assert that the request's messageType = 0
 	var replied bool = false
-	fmt.Println(len(n.replyTracker))
 	if len(n.replyTracker) == 0 {
 		go n.replyMessage(msg)
 		replied = true
@@ -180,11 +215,9 @@ func (n *Node) onReceiveRequest(msg Message) {
 			replied = true
 		}
 	}
-	fmt.Println("REPLIED: ", replied)
 	if replied == false {
 		//Add to a map of pending replies
 		n.pendingReplies[msg.senderID] = append(n.pendingReplies[msg.senderID], msg)
-		fmt.Println("No reply")
 	}
 	//TODO: check if we need to enqueue no matter what - think so
 	n.enqueue(msg)
@@ -229,14 +262,17 @@ func (n *Node) onReceiveReply(msg Message) {
 	n.replyTracker[msg.replyTarget.timestamp][msg.senderID] = true
 	//Need to check if the node that replied has a pending request
 	for _, msg := range n.pendingReplies[msg.senderID] {
-		fmt.Printf("Node %s has a message waiting for reply...", msg.senderID)
+		fmt.Printf("[Node %d] Node has a request waiting for reply...", msg.senderID)
 		n.onReceiveRequest(msg)
 	}
 	// Check if everyone has replied this node
 	if n.allReplied(msg.replyTarget.timestamp) {
+		fmt.Printf("[Node %d] All replies have been received for Request with TS: %d \n", n.id, msg.replyTarget.timestamp)
 		firstRequest := n.pq[0]
 		if firstRequest.senderID == n.id && firstRequest.timestamp == msg.replyTarget.timestamp {
 			//	TODO: Go Routine?
+			fmt.Printf("[Node %d] Msg with timestamp %d is also at the front of the queue. \n[Node %d] will " +
+				"now enter the CS. \n", n.id, msg.replyTarget.timestamp, n.id)
 			n.enterCS(firstRequest)
 		}
 
@@ -245,14 +281,16 @@ func (n *Node) onReceiveReply(msg Message) {
 
 func (n *Node) onReceiveRelease(msg Message) {
 	if msg.senderID == n.pq[0].senderID {
+		fmt.Printf("[Node %d] Before Length: %d \n", n.id, len(n.pq))
+		n.pq = n.pq[1:]
+		fmt.Printf("[Node %d] After Length: %d \n", n.id, len(n.pq))
 
 	} else {
-		fmt.Printf("Release msg [Node %s] is not sent by the first request's "+
-			"sender [Node %s] \n", msg.senderID, n.pq[0].senderID)
+		fmt.Printf("[Node %d] Release msg from [Node %d] is not sent by the first request's "+
+			"sender [Node %d] \n", n.id, msg.senderID, n.pq[0].senderID)
 
 		return
 	}
-	n.pq = n.pq[1:]
 
 	if len(n.pq) > 0 {
 		firstRequest := n.pq[0]
@@ -266,40 +304,44 @@ func (n *Node) onReceiveRelease(msg Message) {
 }
 
 func (n *Node) broadcastMessage(msg Message) {
-	for nodeId, nodeAddr := range n.ptrMap {
-		fmt.Println(n.id, nodeId)
+	for nodeId, _ := range n.ptrMap {
 		if nodeId == n.id {
 			continue
 		}
-		fmt.Printf("Node %d sending to Node %d at %p \n", n.id, nodeId, nodeAddr)
+
 		go n.sendMessage(msg, nodeId)
 	}
 
 }
 
 func (n *Node) sendMessage(msg Message, receiverID int) {
-
+	fmt.Printf("[Node %d] Sending a <%s> message to Node %d at MemAddr %p \n", n.id,
+		msg.messageType, receiverID, n.ptrMap[receiverID])
+	//Simulate uncertain latency and asynchronous nature of message passing
+	numMilliSeconds := rand.Intn(2000)
+	time.Sleep(time.Duration(numMilliSeconds) * time.Millisecond)
 	receiver := n.ptrMap[receiverID]
 	receiver.nodeChannel <- msg
 }
 
 func (n *Node) onReceivedMessage(msg Message) {
+
+	//Taking the max(self.logicalClock, msg.timestamp) + 1
 	if msg.timestamp >= n.logicalClock {
 		n.logicalClock = msg.timestamp + 1
 	} else {
 		n.logicalClock += 1
 	}
 
-	//Message is a request by another node
-	fmt.Printf("Node %d received a msg (type= %d) from Node %d \n", n.id, msg.messageType, msg.senderID)
+	fmt.Printf("[Node %d] Received a <%s> Message from Node %d \n", n.id, msg.messageType, msg.senderID)
 	switch mType := msg.messageType; {
-	case mType == 0:
+	case mType == "Request":
 		n.onReceiveRequest(msg)
 
-	case mType == 1:
+	case mType == "Reply":
 		n.onReceiveReply(msg)
 
-	case mType == 2:
+	case mType == "Release":
 		n.onReceiveRelease(msg)
 	}
 
@@ -318,9 +360,36 @@ func (n *Node) listen() {
 }
 
 //Define constants here
-const NUM_NODES int = 3
+const NUM_NODES int = 10
 
 func main() {
+	var automated bool
+
+	for {
+		fmt.Printf("There are two ways to run this programme.\n1. Automated [Press 1]\n" +
+			"The Nodes will start to request to enter the Critical Section (CS) sequentially at a randomly spaced interval.\n" +
+			"2. Interactive [Press 2] \n" +
+			"You will control when the nodes request to enter the CS by pressing any key on the keyboard to start a Node's request\n")
+
+		reader := bufio.NewReader(os.Stdin)
+		char, _, _ := reader.ReadRune()
+		if char == '1' {
+			fmt.Println("You have chosen Automated, sit back and relax :)")
+			automated = true
+			time.Sleep(time.Duration(500) * time.Millisecond)
+			break
+		} else if char == '2' {
+			fmt.Println("You have chosen Interactive")
+			automated = false
+			time.Sleep(time.Duration(500) * time.Millisecond)
+			break
+
+		} else {
+			fmt.Println("Please enter either 1 or 2")
+		}
+	}
+
+	fmt.Println("Automated: ", automated)
 	//	TODO: Create a global address book
 	globalNodeMap := map[int]*Node{}
 
@@ -338,14 +407,25 @@ func main() {
 		go globalNodeMap[i].listen()
 	}
 
-	for i := 1; i <= 3; i++ {
-		numSeconds := rand.Intn(10)
-		time.Sleep(time.Duration(numSeconds) * time.Second)
-		//Insert a random probability
-		go globalNodeMap[i].requestCS()
+	if automated {
+		for i := 1; i <= NUM_NODES; i++ {
+			//Insert a random probability
+			numSeconds := rand.Intn(10)
+			time.Sleep(time.Duration(numSeconds) * time.Second)
+			go globalNodeMap[i].requestCS()
+		}
+
+	} else {
+		for i := 1; i <= NUM_NODES; i++ {
+			fmt.Println("Press [Enter] to get a new node to start requesting for CS")
+			input := bufio.NewScanner(os.Stdin)
+			input.Scan()
+			go globalNodeMap[i].requestCS()
+		}
+
 	}
 
+
 	time.Sleep(time.Duration(60) * time.Second)
-	// How to decide who wants to enter the critical section?
 
 }
