@@ -92,7 +92,6 @@ func (n *Node) setPtrMap(ptrMap map[int]*Node) {
 }
 
 func (n *Node) enqueue(newMsg Message) {
-	//TODO: Write the logic for inserting a new message in the correct position
 	fmt.Printf("[Node %d] BEFORE: %s \n", n.id, stringPQ(n.pq))
 
 	for _, msg := range n.pq {
@@ -126,12 +125,8 @@ func (n *Node) dequeue(senderID int) {
 			return
 		}
 	}
-	fmt.Println(senderID, stringPQ(n.pq))
-	fmt.Println("NOT FOUNDDDDNOT FOUNDDDDNOT FOUNDDDDNOT FOUNDDDDNOT FOUNDDDDNOT FOUNDDDD")
 }
 
-//TODO: request to enter CS
-//TODO: How to simulate a node's need to enter the CS?
 func (n *Node) requestCS() {
 
 	fmt.Printf("=======================================\n Node %d is " +
@@ -202,39 +197,26 @@ func (n *Node) replyMessage(receivedMsg Message) {
 func (n *Node) onReceiveRequest(msg Message) {
 	//Check if i has received a reply from machine j for an earlier request
 	// assert that the request's messageType = 0
-	var replied bool = false
-	if len(n.replyTracker) == 0 {
-		go n.replyMessage(msg)
-		replied = true
-	}
-	for requestTS, replyMap := range n.replyTracker {
-		if requestTS < msg.timestamp {
-			//Received the necessary reply
-			if replyMap[msg.senderID] {
-				//TODO: need goroutine?
-				go n.replyMessage(msg)
-				replied = true
-			}
+	var earlierRequestExists bool = false
 
-		} else if requestTS == msg.timestamp && n.id < msg.senderID {
-			//Tiebreaker - there is a higher priority request AND ascertained that we received the necessary reply
-			if replyMap[msg.senderID] {
-				go n.replyMessage(msg)
-				replied = true
+	for _, requestMsg := range n.pq {
+		//If it is the node's own message
+		if requestMsg.senderID == n.id {
+			if requestMsg.timestamp < msg.timestamp {
+				earlierRequestExists = true
+				break
+			}  else if requestMsg.timestamp == msg.timestamp && requestMsg.senderID < msg.senderID {
+				earlierRequestExists = true
+				break
 			}
-		} else {
-			//	no earlier request
-			go n.replyMessage(msg)
-			replied = true
 		}
 	}
-	if replied == false {
-		//Add to a map of pending replies
-		n.pendingReplies[msg.senderID] = append(n.pendingReplies[msg.senderID], msg)
-	} else {
+
+	if earlierRequestExists {
 		n.enqueue(msg)
+	} else {
+		go n.replyMessage(msg)
 	}
-	//TODO: check if we need to enqueue no matter what - think so
 
 	fmt.Printf("Node %d's PQ: %s \n", n.id, stringPQ(n.pq))
 }
@@ -293,13 +275,7 @@ func (n *Node) onReceiveReply(msg Message) {
 		delete(n.replyTracker, msg.timestamp)
 		fmt.Printf("[Node %d] All replies have been received for Request with TS: %d \n", n.id, msg.replyTarget.timestamp)
 		firstRequest := n.pq[0]
-		if firstRequest.senderID == n.id && firstRequest.timestamp == msg.replyTarget.timestamp {
-			//	TODO: Go Routine?
-			fmt.Printf("[Node %d] Msg with timestamp %d is also at the front of the queue. \n[Node %d] will " +
-				"now enter the CS. \n", n.id, msg.replyTarget.timestamp, n.id)
-			n.enterCS(firstRequest)
-		}
-
+		n.enterCS(firstRequest)
 	}
 }
 
@@ -405,7 +381,6 @@ func main() {
 	}
 
 	fmt.Println("Automated: ", automated)
-	//	TODO: Create a global address book
 	globalNodeMap := map[int]*Node{}
 
 	for i := 1; i <= NUM_NODES; i++ {
