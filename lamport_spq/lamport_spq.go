@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -39,6 +40,8 @@ type Node struct {
 
 	//Keep tracking of pending replies
 	pendingReplies map[int][]Message
+	globalWG *sync.WaitGroup
+	quit chan int
 }
 
 type MessageType string
@@ -70,7 +73,8 @@ func NewNode(id int) *Node {
 	var pq []Message
 	//Create a blank map to track
 	var replyTracker = map[int]map[int]bool{}
-	n := Node{id, 0, channel, pq, nil, replyTracker, map[int][]Message{}}
+	n := Node{id, 0, channel, pq, nil,
+		replyTracker, map[int][]Message{}, &sync.WaitGroup{}, make(chan int)}
 
 	return &n
 }
@@ -129,6 +133,7 @@ func (n *Node) dequeue(senderID int) {
 //TODO: request to enter CS
 //TODO: How to simulate a node's need to enter the CS?
 func (n *Node) requestCS() {
+
 	fmt.Printf("=======================================\n Node %d is " +
 		"requesting to enter the CS \n =======================================\n", n.id)
 	time.Sleep(time.Duration(500) * time.Millisecond)
@@ -155,6 +160,8 @@ func (n *Node) requestCS() {
 
 //Enter criticial section
 func (n *Node) enterCS(msg Message) {
+	defer n.globalWG.Done()
+	n.dequeue(msg.senderID) //dequeue at the start to avoid race conditions
 	fmt.Printf("[Node %d] <Entering CS> PQ: %s \n", n.id, stringPQ(n.pq))
 	//msg should be the request that is being granted the CS now
 
@@ -172,8 +179,7 @@ func (n *Node) enterCS(msg Message) {
 		replyTarget: ReplyTarget{},
 	}
 	n.broadcastMessage(releaseMessage)
-	delete(n.replyTracker, msg.timestamp)
-	n.dequeue(n.id)
+
 }
 
 func (n *Node) replyMessage(receivedMsg Message) {
@@ -234,6 +240,10 @@ func (n *Node) onReceiveRequest(msg Message) {
 }
 
 func (n *Node) allReplied(timestamp int) bool {
+	//Ensure the edge case that if the timestamp does not even exist, we do not considered that it has received all its reply
+	if _, ok := n.replyTracker[timestamp]; !ok {
+		return false
+	}
 	for _, replyStatus := range n.replyTracker[timestamp] {
 		if replyStatus == false {
 			return false
@@ -254,9 +264,12 @@ func (n *Node) getEmptyReplyMap() map[int]bool {
 }
 
 func stringPQ(pq []Message) string {
+	if len(pq) == 0 {
+		return "PQ: | Empty |"
+	}
 	var ret string = "|"
 	for _, msg := range pq {
-		ret += fmt.Sprintf("[TS: %d] by Node %d| ", msg.timestamp, msg.senderID)
+		ret += fmt.Sprintf("PQ: [TS: %d] by Node %d| ", msg.timestamp, msg.senderID)
 	}
 	return ret
 }
@@ -276,6 +289,8 @@ func (n *Node) onReceiveReply(msg Message) {
 	}
 	// Check if everyone has replied this node
 	if n.allReplied(msg.replyTarget.timestamp) {
+		//reset
+		delete(n.replyTracker, msg.timestamp)
 		fmt.Printf("[Node %d] All replies have been received for Request with TS: %d \n", n.id, msg.replyTarget.timestamp)
 		firstRequest := n.pq[0]
 		if firstRequest.senderID == n.id && firstRequest.timestamp == msg.replyTarget.timestamp {
@@ -289,11 +304,7 @@ func (n *Node) onReceiveReply(msg Message) {
 }
 
 func (n *Node) onReceiveRelease(msg Message) {
-	fmt.Printf("[Node %d] Before PQ Size: %d \n", n.id, len(n.pq))
-	fmt.Println(stringPQ(n.pq))
 	n.dequeue(msg.senderID)
-	fmt.Printf("[Node %d] After PQ Size: %d \n", n.id, len(n.pq))
-	fmt.Println(stringPQ(n.pq))
 
 	if len(n.pq) > 0 {
 		firstRequest := n.pq[0]
@@ -302,7 +313,6 @@ func (n *Node) onReceiveRelease(msg Message) {
 				n.enterCS(firstRequest)
 			}
 		}
-
 	}
 }
 
@@ -357,6 +367,8 @@ func (n *Node) listen() {
 		select {
 		case msg := <-n.nodeChannel:
 			go n.onReceivedMessage(msg)
+		case <-n.quit:
+			return
 		}
 	}
 }
@@ -365,6 +377,7 @@ func (n *Node) listen() {
 const NUM_NODES int = 10
 
 func main() {
+	var wg sync.WaitGroup
 	var automated bool
 
 	for {
@@ -402,10 +415,12 @@ func main() {
 	}
 	//Give everyone the global pointer map
 	for i := 1; i <= NUM_NODES; i++ {
+		wg.Add(1)
 		globalNodeMap[i].setPtrMap(globalNodeMap)
 	}
 
 	for i := 1; i <= NUM_NODES; i++ {
+		globalNodeMap[i].globalWG = &wg
 		go globalNodeMap[i].listen()
 	}
 
@@ -423,11 +438,18 @@ func main() {
 			input := bufio.NewScanner(os.Stdin)
 			input.Scan()
 			go globalNodeMap[i].requestCS()
+
 		}
 
 	}
 
 
-	time.Sleep(time.Duration(60) * time.Second)
+	wg.Wait()
+	time.Sleep(time.Duration(3) * time.Second)
+
+	fmt.Println("All Nodes have entered entered and exited the Critical Section\n Ending programme now \n")
+	for i := 1; i <= NUM_NODES; i++ {
+		globalNodeMap[i].quit <- 1
+	}
 
 }
